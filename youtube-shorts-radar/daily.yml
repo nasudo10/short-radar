@@ -1,0 +1,38 @@
+name: Radar diário de Shorts virais
+
+on:
+  schedule:
+    # 09:00 no horário de Brasília (UTC-3) = 12:00 UTC
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}   # permite rodar manualmente pelo GitHub também
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Buscar vídeos virais
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python fetch_shorts.py
+
+      - name: Salvar resultado no repositório
+        run: |
+          git config --global user.name "radar-bot"
+          git config --global user.email "radar-bot@users.noreply.github.com"
+          git add data/data.json
+          git diff --quiet --cached || git commit -m "Atualização diária: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
