@@ -2,8 +2,8 @@ name: Radar diário de Shorts virais
 
 on:
   schedule:
-    # 09:00 no horário de Brasília (UTC-3) = 12:00 UTC
-    - cron: "0 12 * * *"
+    # 07:00 no horário de Brasília (UTC-3) = 10:00 UTC
+    - cron: "0 10 * * *"
   workflow_dispatch: {}   # permite rodar manualmente pelo GitHub também
 
 permissions:
