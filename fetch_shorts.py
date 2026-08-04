@@ -50,7 +50,7 @@ SEARCH_QUERIES = {
     "de": ["shorts wusstest du", "shorts lustige fakten", "shorts erstaunliche fakten"],
     "it": ["shorts lo sapevi", "shorts curiosità", "shorts fatti incredibili"],
 }
-SEARCH_PAGES_PER_QUERY = 4         # paginas por termo de busca (50 resultados cada)
+SEARCH_PAGES_PER_QUERY = 5         # paginas por termo de busca (50 resultados cada)
 TOP_N = 200                        # teto alto -- na pratica, entrega tudo que passar nos filtros
 MIN_VIEWS = 500_000                # views minimas DENTRO da janela de 48h
 MAX_DURATION_SECONDS = 25          # duracao maxima do Short
@@ -100,16 +100,18 @@ REFERENCE_CHANNELS = [
     "BoomCerebral-wp1nn",
     "ButchElSabio",
 ]
-CHANNEL_RECENT_VIDEOS = 15         # quantos uploads recentes checar por canal
+CHANNEL_RECENT_VIDEOS = 30         # quantos uploads recentes checar por canal (cobre ~1 mes)
 
 # Filtros de PERFIL DE CANAL -- o objetivo e priorizar canais pequenos
 # que estao estourando por causa do FORMATO/GANCHO, nao por audiencia ja
 # consolidada. Nao se aplica aos canais de referencia (esses ja passaram
 # no seu crivo manual e entram direto).
 MAX_SUBSCRIBERS = 200_000          # acima disso, e considerado "canal grande" e excluido
-MIN_UPLOADS_LAST_7_DAYS = 3        # exige constancia de postagem (nao e sorte isolada)
-MIN_REPEAT_HITS = 2                # quantos dos uploads recentes precisam ter sido "grandes"
-REPEAT_HIT_VIEWS_THRESHOLD = 250_000   # o que conta como "vídeo grande" nesse historico
+POSTING_WINDOW_DAYS = 7            # janela usada para medir CONSTANCIA de postagem
+MIN_UPLOADS_IN_WINDOW = 7          # exige quase 1 upload por dia na semana (canal muito ativo)
+REPEAT_HIT_WINDOW_DAYS = 30        # janela usada para medir REPETICAO de acerto (~1 mes)
+MIN_REPEAT_HITS = 1                # pelo menos 1 upload no periodo de 30 dias ja bateu um numero grande
+REPEAT_HIT_VIEWS_THRESHOLD = 300_000    # o que conta como "vídeo grande" nesse historico
 
 
 def iso_duration_to_seconds(duration: str) -> int:
@@ -217,12 +219,13 @@ def get_uploads_playlist_id(channel_id: str) -> str | None:
 
 def analyze_channel_profile(channel_id: str, now: datetime.datetime) -> dict:
     """Analisa os uploads recentes de um canal para medir: (1) constancia
-    de postagem nos ultimos 7 dias, e (2) quantos desses uploads ja
-    bateram um numero grande de views -- ou seja, se o canal REPETE
+    de postagem nos ultimos POSTING_WINDOW_DAYS (padrao 7 dias), e (2)
+    quantos uploads dos ultimos REPEAT_HIT_WINDOW_DAYS (padrao 30 dias)
+    ja bateram um numero grande de views -- ou seja, se o canal REPETE
     acertos, e nao teve so um golpe de sorte isolado."""
     uploads_playlist_id = get_uploads_playlist_id(channel_id)
     if not uploads_playlist_id:
-        return {"uploads_7d": 0, "repeat_hits": 0}
+        return {"uploads_in_window": 0, "repeat_hits": 0}
 
     params = {
         "part": "contentDetails",
@@ -237,22 +240,26 @@ def analyze_channel_profile(channel_id: str, now: datetime.datetime) -> dict:
         for i in resp.json().get("items", [])
     ]
     if not video_ids:
-        return {"uploads_7d": 0, "repeat_hits": 0}
+        return {"uploads_in_window": 0, "repeat_hits": 0}
 
     details = fetch_video_details(video_ids)
-    uploads_7d = 0
+    uploads_in_window = 0
     repeat_hits = 0
     for item in details:
         published_dt = datetime.datetime.strptime(
             item["snippet"]["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
-        if (now - published_dt).days <= 7:
-            uploads_7d += 1
-        views = int(item.get("statistics", {}).get("viewCount", 0))
-        if views >= REPEAT_HIT_VIEWS_THRESHOLD:
-            repeat_hits += 1
+        days_ago = (now - published_dt).days
 
-    return {"uploads_7d": uploads_7d, "repeat_hits": repeat_hits}
+        if days_ago <= POSTING_WINDOW_DAYS:
+            uploads_in_window += 1
+
+        if days_ago <= REPEAT_HIT_WINDOW_DAYS:
+            views = int(item.get("statistics", {}).get("viewCount", 0))
+            if views >= REPEAT_HIT_VIEWS_THRESHOLD:
+                repeat_hits += 1
+
+    return {"uploads_in_window": uploads_in_window, "repeat_hits": repeat_hits}
 
 
 def fetch_reference_channel_videos(handle: str) -> list:
@@ -493,7 +500,7 @@ def main():
             channel_profile_cache[ch_id] = analyze_channel_profile(ch_id, now)
         profile = channel_profile_cache[ch_id]
 
-        if profile["uploads_7d"] < MIN_UPLOADS_LAST_7_DAYS:
+        if profile["uploads_in_window"] < MIN_UPLOADS_IN_WINDOW:
             reasons["consistency"] += 1
             continue  # canal nao posta com constancia -- pode ter sido sorte isolada
 
@@ -501,14 +508,16 @@ def main():
             reasons["consistency"] += 1
             continue  # canal ainda nao repetiu o acerto -- pode ter sido sorte isolada
 
-        r["channelUploadsLast7d"] = profile["uploads_7d"]
+        r["channelUploadsLast7d"] = profile["uploads_in_window"]
         r["channelRepeatHits"] = profile["repeat_hits"]
         r["outlierScore"] = round(r["views"] / max(subs or 1, 1000), 1)
         filtered_results.append(r)
 
     results = filtered_results
     print(f"Apos filtro de perfil de canal (teto {MAX_SUBSCRIBERS} inscritos, "
-          f"consistencia): {len(results)} videos restantes")
+          f"postagem >= {MIN_UPLOADS_IN_WINDOW} em {POSTING_WINDOW_DAYS}d, "
+          f"repeticao >= {MIN_REPEAT_HITS} hit(s) de {REPEAT_HIT_VIEWS_THRESHOLD} views "
+          f"em {REPEAT_HIT_WINDOW_DAYS}d): {len(results)} videos restantes")
 
     results.sort(key=lambda x: x["outlierScore"], reverse=True)
 
