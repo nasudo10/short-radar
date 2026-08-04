@@ -330,7 +330,7 @@
   <div class="scan-line"></div>
   <div class="eyebrow"><span class="dot"></span> CAPTANDO SINAL — SHORTS EM ALTA</div>
   <h1>Radar de Shorts Virais</h1>
-  <p class="subtitle">Shorts em inglês e espanhol publicados nas últimas 48h, ranqueados por velocidade de visualizações — o que está bombando agora, não o que já é grande.</p>
+  <p class="subtitle">Shorts em inglês, espanhol, francês, alemão e italiano publicados nos últimos 30 dias, ranqueados por outlier score — o que rompeu o alcance normal do canal, não o que já é grande.</p>
   <div class="meta-row">
     <div class="meta-item">
       <div class="label">Última atualização</div>
@@ -342,7 +342,7 @@
     </div>
     <div class="meta-item">
       <div class="label">Janela</div>
-      <div class="value">48h</div>
+      <div class="value">30 dias</div>
     </div>
   </div>
 </header>
@@ -392,7 +392,8 @@
   function formatHoursAgo(hours){
     if(hours === undefined || hours === null) return '—';
     if(hours < 1) return `${Math.round(hours * 60)}min`;
-    return `${Math.round(hours)}h`;
+    if(hours < 24) return `${Math.round(hours)}h`;
+    return `${Math.round(hours / 24)}d`;
   }
 
   function detectLang(title){
