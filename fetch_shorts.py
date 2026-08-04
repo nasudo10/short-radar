@@ -2,7 +2,7 @@
 Radar de Shorts Virais - YouTube Data API v3
 ----------------------------------------------
 Busca Shorts verticais (9:16), com no maximo 25s de duracao, publicados
-nas ultimas 48h, em ingles, espanhol, frances, alemao e italiano, com
+nas ultimas 30 dias, em ingles, espanhol, frances, alemao e italiano, com
 pelo menos 500.000 visualizacoes dentro dessa janela e definicao HD
 (melhor aproximacao disponivel na API para "Full HD ou superior" -- a
 API nao expoe a resolucao exata em pixels). A busca ja mira no nicho de
@@ -12,10 +12,10 @@ exceto para os canais de referencia, que entram direto. Filtra fora
 candidatos com termos tipicos de conteudo gerado por IA no
 titulo/descricao.
 
-Rodar o script mais de uma vez no mesmo dia ACUMULA opcoes: os videos
-da rodada anterior (ainda dentro da janela de 48h) sao mesclados com os
-novos, sem duplicar. O log mostra quanto de cota da API cada rodada
-gasta, para voce saber quantas vezes pode rodar de novo no mesmo dia.
+Cada rodada SUBSTITUI o arquivo data.json inteiro pelos videos encontrados
+NESSA rodada -- nao acumula com o que foi salvo em rodadas anteriores.
+O log mostra quanto de cota da API cada rodada gasta, para voce saber
+quantas vezes pode rodar de novo no mesmo dia.
 
 Uso:
     export YOUTUBE_API_KEY="sua_chave_aqui"
@@ -44,18 +44,36 @@ REQUEST_DELAY_SECONDS = 1.2        # pausa entre chamadas -- evita 429 (rate lim
 MAX_RETRIES = 5                    # tentativas extras se a API responder 429
 
 
+class SearchQuotaExhausted(Exception):
+    """Levantado quando a cota diaria ESPECIFICA de busca (Search Queries
+    per day, hoje limitada a 100/dia pelo Google -- separada da cota
+    geral de 10.000 unidades) se esgota. Tentar de novo nao ajuda ate a
+    cota resetar (meia-noite no horario do Pacifico)."""
+    pass
+
+
 def api_get(url: str, params: dict) -> dict:
     """Faz uma chamada GET a API do YouTube com pausa entre requisicoes e
     nova tentativa automatica (com espera crescente) se a API responder
-    429 (rajada de pedidos rapida demais -- diferente de estourar a cota
-    diaria, que retornaria 403)."""
+    429 por rajada de pedidos (rateLimitExceeded -- temporario). Se o
+    erro for cota diaria de busca esgotada (quotaExceeded/dailyLimitExceeded),
+    para na hora em vez de insistir a toa."""
     time.sleep(REQUEST_DELAY_SECONDS)
     for attempt in range(MAX_RETRIES + 1):
         resp = requests.get(url, params=params, timeout=30)
-        if resp.status_code == 429:
-            wait = min(3 * (2 ** attempt), 60)  # 3, 6, 12, 24, 48, 60 segundos
-            print(f"429 recebido, aguardando {wait}s antes de tentar de novo "
-                  f"(tentativa {attempt + 1}/{MAX_RETRIES})...")
+        if resp.status_code in (403, 429):
+            reason = ""
+            try:
+                reason = resp.json().get("error", {}).get("errors", [{}])[0].get("reason", "")
+            except (ValueError, KeyError, IndexError):
+                pass
+
+            if reason in ("quotaExceeded", "dailyLimitExceeded"):
+                raise SearchQuotaExhausted(reason)
+
+            wait = min(3 * (2 ** attempt), 60)
+            print(f"429 recebido ({reason or 'sem motivo informado'}), aguardando {wait}s "
+                  f"antes de tentar de novo (tentativa {attempt + 1}/{MAX_RETRIES})...")
             time.sleep(wait)
             continue
         resp.raise_for_status()
@@ -63,7 +81,7 @@ def api_get(url: str, params: dict) -> dict:
     resp.raise_for_status()  # se esgotou as tentativas, deixa o erro real aparecer
     return {}
 
-HOURS_WINDOW = 48                  # janela de tempo (publicado ha no maximo 48h)
+HOURS_WINDOW = 30 * 24             # janela de tempo: 30 dias (publicado ha no maximo 720h)
 # Termos de busca usados para ja mirar no nicho de curiosidades desde a
 # origem (em vez de buscar generico e filtrar depois -- assim a maior
 # parte do que chega ja e do nicho certo).
@@ -74,9 +92,9 @@ SEARCH_QUERIES = {
     "de": ["shorts wusstest du", "shorts lustige fakten", "shorts erstaunliche fakten"],
     "it": ["shorts lo sapevi", "shorts curiosità", "shorts fatti incredibili"],
 }
-SEARCH_PAGES_PER_QUERY = 5         # paginas por termo de busca (50 resultados cada)
+SEARCH_PAGES_PER_QUERY = 3         # paginas por termo de busca (50 resultados cada)
 TOP_N = 200                        # teto alto -- na pratica, entrega tudo que passar nos filtros
-MIN_VIEWS = 500_000                # views minimas DENTRO da janela de 48h
+MIN_VIEWS = 500_000                # views minimas DENTRO da janela (30 dias)
 MAX_DURATION_SECONDS = 25          # duracao maxima do Short
 
 # Termos que indicam conteudo gerado/narrado por IA -- filtro aproximado.
@@ -356,34 +374,6 @@ def fetch_shorts_search(language: str, query: str, published_after: str) -> list
     return details
 
 
-def load_existing_results(now: datetime.datetime) -> list:
-    """Carrega os videos salvos na rodada anterior (se existir) e mantem
-    so os que ainda estao dentro da janela de 48h. Isso permite rodar a
-    busca varias vezes no mesmo dia e ir ACUMULANDO opcoes, em vez de
-    substituir tudo a cada rodada."""
-    path = "data/data.json"
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-
-    kept = []
-    for v in data.get("videos", []):
-        try:
-            published_dt = datetime.datetime.strptime(
-                v["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
-            ).replace(tzinfo=datetime.timezone.utc)
-        except (KeyError, ValueError):
-            continue
-        hours_since = (now - published_dt).total_seconds() / 3600
-        if hours_since <= HOURS_WINDOW:
-            kept.append(v)
-    return kept
-
-
 def main():
     now = datetime.datetime.now(datetime.timezone.utc)
     published_after = (now - datetime.timedelta(hours=HOURS_WINDOW)).strftime(
@@ -392,9 +382,20 @@ def main():
 
     seen_ids = set()
     raw_items = []
+    search_quota_hit = False
     for lang, queries in SEARCH_QUERIES.items():
+        if search_quota_hit:
+            break
         for query in queries:
-            batch = fetch_shorts_search(lang, query, published_after)
+            try:
+                batch = fetch_shorts_search(lang, query, published_after)
+            except SearchQuotaExhausted:
+                print("⚠️  Cota diaria de BUSCA (100/dia) esgotada. Pulando as "
+                      "buscas restantes e seguindo so com o que ja foi coletado "
+                      "+ canais de referencia. Essa cota reseta a meia-noite "
+                      "no horario do Pacifico.")
+                search_quota_hit = True
+                break
             new_batch = [i for i in batch if i["id"] not in seen_ids]
             seen_ids.update(i["id"] for i in new_batch)
             raw_items.extend(new_batch)
@@ -451,7 +452,7 @@ def main():
         hours_since_publish = (now - published_dt).total_seconds() / 3600
         if hours_since_publish > HOURS_WINDOW:
             reasons["window"] += 1
-            continue  # publicado ha mais de 48h
+            continue  # publicado ha mais de 30 dias
         hours_since_publish = max(hours_since_publish, 0.5)
 
         stats = item.get("statistics", {})
@@ -536,14 +537,7 @@ def main():
           f"em {REPEAT_HIT_WINDOW_DAYS}d): {len(results)} videos restantes")
 
     results.sort(key=lambda x: x["outlierScore"], reverse=True)
-
-    # Mescla com o que ja estava salvo (ainda dentro da janela de 48h),
-    # sem duplicar por ID -- assim, rodar de novo no mesmo dia SOMA opcoes.
-    existing = load_existing_results(now)
-    existing_ids = {v["id"] for v in results}
-    combined = results + [v for v in existing if v["id"] not in existing_ids]
-    combined.sort(key=lambda x: x.get("outlierScore", 0), reverse=True)
-    top_results = combined[:TOP_N]
+    top_results = results[:TOP_N]
 
     # Estimativa de cota gasta nesta rodada (para voce saber quantas vezes
     # por dia pode rodar sem estourar as 10.000 unidades gratuitas/dia).
