@@ -165,6 +165,32 @@
     text-transform: uppercase;
     border: 1px solid var(--border);
   }
+  .ref-badge{
+    position: absolute;
+    bottom: 10px; left: 10px;
+    background: rgba(255,138,61,0.15);
+    color: var(--amber);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 7px;
+    border-radius: 5px;
+    border: 1px solid var(--amber-dim);
+    letter-spacing: 0.5px;
+  }
+  .outlier-badge{
+    position: absolute;
+    bottom: 10px; right: 10px;
+    background: rgba(74,222,128,0.15);
+    color: var(--green);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 7px;
+    border-radius: 5px;
+    border: 1px solid rgba(74,222,128,0.4);
+    letter-spacing: 0.5px;
+  }
   .card-body{
     padding: 14px 14px 16px;
     display: flex;
@@ -184,6 +210,26 @@
   .channel{
     font-size: 12.5px;
     color: var(--text-dim);
+  }
+  .sub-count{
+    color: var(--text-dim);
+    opacity: 0.7;
+  }
+  .mini-stats{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .mini-stats span{
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .mini-stats .icon{
+    opacity: 0.7;
   }
   .stats-row{
     display: flex;
@@ -221,6 +267,61 @@
     font-size: 10px;
     letter-spacing: 1px;
   }
+
+  /* ---------- TOOLBAR ---------- */
+  .toolbar{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 0 32px 20px;
+  }
+  .btn-primary{
+    background: var(--amber);
+    color: #1A0F05;
+    border: none;
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 9px 16px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+  .btn-primary:hover{ opacity: 0.85; }
+  .btn-primary:disabled{ opacity: 0.5; cursor: not-allowed; }
+  .btn-ghost{
+    background: var(--panel);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    font-size: 14px;
+    padding: 8px 11px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .btn-ghost:hover{ color: var(--text); border-color: var(--amber-dim); }
+  .toolbar-divider{
+    width: 1px;
+    height: 22px;
+    background: var(--border);
+    margin: 0 4px;
+  }
+  .select-control{
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    max-width: 220px;
+  }
+  .rerun-status{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -247,6 +348,26 @@
 </header>
 
 <main>
+  <div class="toolbar">
+    <button id="rerun-btn" class="btn-primary">🔄 Rodar nova busca agora</button>
+    <button id="token-btn" class="btn-ghost" title="Configurar chave de acesso">⚙️</button>
+
+    <div class="toolbar-divider"></div>
+
+    <select id="sort-select" class="select-control">
+      <option value="score">Melhor score</option>
+      <option value="views">Mais visualizações</option>
+      <option value="recent">Mais recente</option>
+      <option value="oldest">Mais antigo</option>
+    </select>
+
+    <select id="channel-select" class="select-control">
+      <option value="all">Todos os canais</option>
+    </select>
+
+    <span id="rerun-status" class="rerun-status"></span>
+  </div>
+
   <div id="status" class="status">Carregando dados...</div>
   <div id="grid" class="grid"></div>
 </main>
@@ -257,9 +378,21 @@
   const DATA_URL = "./data/data.json";
 
   function formatNumber(n){
+    if(n === undefined || n === null) return '—';
     if(n >= 1000000) return (n/1000000).toFixed(1).replace(/\.0$/,'') + 'M';
     if(n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/,'') + 'K';
     return String(n);
+  }
+
+  function formatDuration(seconds){
+    if(seconds === undefined || seconds === null) return '—';
+    return `0:${String(seconds).padStart(2, '0')}`;
+  }
+
+  function formatHoursAgo(hours){
+    if(hours === undefined || hours === null) return '—';
+    if(hours < 1) return `${Math.round(hours * 60)}min`;
+    return `${Math.round(hours)}h`;
   }
 
   function detectLang(title){
@@ -267,29 +400,73 @@
     return '';
   }
 
-  function render(data){
-    const grid = document.getElementById('grid');
-    const status = document.getElementById('status');
+  let ALL_VIDEOS = [];
+
+  function setMeta(data){
     document.getElementById('video-count').textContent = data.videos.length;
     document.getElementById('updated-at').textContent = new Date(data.generatedAt).toLocaleString('pt-BR', {
       day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
     });
+  }
 
-    if(!data.videos.length){
-      status.textContent = 'Nenhum vídeo encontrado na última janela.';
+  function populateChannelFilter(videos){
+    const select = document.getElementById('channel-select');
+    const channels = [...new Set(videos.map(v => v.channel))].sort();
+    select.innerHTML = '<option value="all">Todos os canais</option>' +
+      channels.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  }
+
+  function applySortAndFilter(){
+    const sortBy = document.getElementById('sort-select').value;
+    const channel = document.getElementById('channel-select').value;
+
+    let list = [...ALL_VIDEOS];
+    if(channel !== 'all'){
+      list = list.filter(v => v.channel === channel);
+    }
+
+    if(sortBy === 'views'){
+      list.sort((a, b) => b.views - a.views);
+    } else if(sortBy === 'recent'){
+      list.sort((a, b) => a.hoursSincePublish - b.hoursSincePublish);
+    } else if(sortBy === 'oldest'){
+      list.sort((a, b) => b.hoursSincePublish - a.hoursSincePublish);
+    } else {
+      list.sort((a, b) => (b.outlierScore || 0) - (a.outlierScore || 0));
+    }
+
+    renderGrid(list);
+  }
+
+  function renderGrid(videos){
+    const grid = document.getElementById('grid');
+    const status = document.getElementById('status');
+
+    if(!videos.length){
+      grid.innerHTML = '';
+      status.textContent = 'Nenhum vídeo encontrado com esse filtro.';
+      status.style.display = 'block';
       return;
     }
     status.style.display = 'none';
 
-    grid.innerHTML = data.videos.map((v, i) => `
+    grid.innerHTML = videos.map((v, i) => `
       <a class="card" href="${v.url}" target="_blank" rel="noopener">
         <div class="thumb-wrap">
           <img src="${v.thumbnail}" alt="${v.title.replace(/"/g,'&quot;')}" loading="lazy">
           <div class="rank">#${i + 1}</div>
+          ${v.referenceChannel ? '<div class="ref-badge">★ REFERÊNCIA</div>' : ''}
+          ${v.outlierScore ? `<div class="outlier-badge">🚀 ${formatNumber(v.outlierScore)}x</div>` : ''}
         </div>
         <div class="card-body">
           <div class="title">${v.title}</div>
-          <div class="channel">${v.channel}</div>
+          <div class="channel">${v.channel}${v.subscribers !== null && v.subscribers !== undefined ? ` <span class="sub-count">· ${formatNumber(v.subscribers)} inscritos</span>` : ''}</div>
+          <div class="mini-stats">
+            <span><span class="icon">📅</span>${formatHoursAgo(v.hoursSincePublish)}</span>
+            <span><span class="icon">⏱</span>${formatDuration(v.durationSeconds)}</span>
+            <span><span class="icon">♡</span>${formatNumber(v.likes)}</span>
+            <span><span class="icon">💬</span>${formatNumber(v.comments)}</span>
+          </div>
           <div class="stats-row">
             <div class="velocity">
               <span class="num">${formatNumber(v.velocity)}/h</span>
@@ -305,15 +482,105 @@
     `).join('');
   }
 
+  function render(data){
+    ALL_VIDEOS = data.videos;
+    setMeta(data);
+    populateChannelFilter(data.videos);
+    applySortAndFilter();
+  }
+
+  document.getElementById('sort-select').addEventListener('change', applySortAndFilter);
+  document.getElementById('channel-select').addEventListener('change', applySortAndFilter);
+
+  // ---------- BOTÃO "RODAR NOVA BUSCA AGORA" ----------
+  // Dispara o workflow do GitHub Actions direto do site. Precisa de um
+  // token de acesso pessoal do GitHub, com permissão MÍNIMA (só "Actions:
+  // write" nesse repositório), guardado no localStorage deste navegador.
+  const GITHUB_OWNER = "nasudo10";
+  const GITHUB_REPO = "short-radar";
+  const WORKFLOW_FILE = "daily.yml";
+
+  function getToken(){
+    return localStorage.getItem('gh_pat');
+  }
+
+  function askForToken(){
+    const token = window.prompt(
+      "Cole aqui seu GitHub Personal Access Token (fine-grained, com " +
+      "permissão apenas de 'Actions: write' neste repositório).\n\n" +
+      "Ele fica salvo só neste navegador, nunca é enviado a mais " +
+      "ninguém além do GitHub."
+    );
+    if(token && token.trim()){
+      localStorage.setItem('gh_pat', token.trim());
+    }
+    return token;
+  }
+
+  document.getElementById('token-btn').addEventListener('click', () => {
+    askForToken();
+  });
+
+  document.getElementById('rerun-btn').addEventListener('click', async () => {
+    let token = getToken();
+    if(!token){
+      token = askForToken();
+      if(!token) return;
+    }
+
+    const btn = document.getElementById('rerun-btn');
+    const statusEl = document.getElementById('rerun-status');
+    btn.disabled = true;
+    btn.textContent = '⏳ Disparando...';
+
+    try {
+      const resp = await fetch(
+        `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/vnd.github+json',
+          },
+          body: JSON.stringify({ ref: 'main' }),
+        }
+      );
+
+      if(resp.status === 204){
+        btn.textContent = '✅ Disparado!';
+        statusEl.textContent = 'Busca rodando... aguarde ~40s e atualize a página.';
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '🔄 Rodar nova busca agora';
+        }, 40000);
+      } else if(resp.status === 401 || resp.status === 403){
+        localStorage.removeItem('gh_pat');
+        statusEl.textContent = 'Token inválido ou sem permissão. Configure de novo no ⚙️.';
+        btn.disabled = false;
+        btn.textContent = '🔄 Rodar nova busca agora';
+      } else {
+        statusEl.textContent = `Erro ao disparar (HTTP ${resp.status}).`;
+        btn.disabled = false;
+        btn.textContent = '🔄 Rodar nova busca agora';
+      }
+    } catch (err) {
+      statusEl.textContent = 'Erro de conexão ao tentar disparar a busca.';
+      btn.disabled = false;
+      btn.textContent = '🔄 Rodar nova busca agora';
+    }
+  });
+
+
+
   const DEMO_DATA = {
     generatedAt: new Date().toISOString(),
     videos: [
-      { title: "This kitchen hack changed EVERYTHING", channel: "@cookwithmax", views: 4200000, velocity: 195000, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=EN", url: "#" },
-      { title: "No puedo creer que esto sea real...", channel: "@vidaentreamigos", views: 2100000, velocity: 141000, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=ES", url: "#" },
-      { title: "POV: your dog understands sarcasm", channel: "@petclips", views: 3800000, velocity: 128000, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=EN", url: "#" },
-      { title: "El truco de organización que todos necesitan", channel: "@ordenaconana", views: 1500000, velocity: 98000, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=ES", url: "#" },
-      { title: "I tried the viral 5-minute workout", channel: "@fitwithjules", views: 2600000, velocity: 87000, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=EN", url: "#" },
-      { title: "3 frases que cambiarán tu forma de vender", channel: "@negociosconlu", views: 980000, velocity: 65000, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=ES", url: "#" },
+      { title: "This kitchen hack changed EVERYTHING", channel: "@cookwithmax", views: 4200000, velocity: 195000, durationSeconds: 18, likes: 312000, comments: 4200, hoursSincePublish: 21.5, subscribers: 890000, outlierScore: 4.7, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=EN", url: "#" },
+      { title: "No puedo creer que esto sea real...", channel: "@vidaentreamigos", views: 2100000, velocity: 141000, durationSeconds: 22, likes: 198000, comments: 2900, hoursSincePublish: 14.9, subscribers: 45000, outlierScore: 46.7, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=ES", url: "#" },
+      { title: "POV: your dog understands sarcasm", channel: "@petclips", views: 3800000, velocity: 128000, durationSeconds: 12, likes: 287000, comments: 3600, hoursSincePublish: 29.7, subscribers: 1200000, outlierScore: 3.2, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=EN", url: "#" },
+      { title: "El truco de organización que todos necesitan", channel: "@ordenaconana", views: 1500000, velocity: 98000, durationSeconds: 24, likes: 121000, comments: 1800, hoursSincePublish: 15.3, subscribers: null, outlierScore: 1500, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=ES", url: "#" },
+      { title: "I tried the viral 5-minute workout", channel: "@fitwithjules", views: 2600000, velocity: 87000, durationSeconds: 20, likes: 165000, comments: 2100, hoursSincePublish: 30, subscribers: 210000, outlierScore: 12.4, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=EN", url: "#" },
+      { title: "3 frases que cambiarán tu forma de vender", channel: "@negociosconlu", views: 980000, velocity: 65000, durationSeconds: 25, likes: 74000, comments: 950, hoursSincePublish: 15.1, subscribers: 12000, outlierScore: 81.7, thumbnail: "https://placehold.co/405x720/16212C/7C8A99?text=ES", url: "#" },
     ]
   };
 
