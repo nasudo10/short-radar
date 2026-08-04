@@ -26,6 +26,7 @@ Gera: data/data.json (consumido pelo dashboard index.html)
 
 import os
 import re
+import time
 import json
 import datetime
 import requests
@@ -38,6 +39,29 @@ SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+
+REQUEST_DELAY_SECONDS = 0.3        # pausa entre chamadas -- evita 429 (rate limit) da API
+MAX_RETRIES = 4                    # tentativas extras se a API responder 429
+
+
+def api_get(url: str, params: dict) -> dict:
+    """Faz uma chamada GET a API do YouTube com pausa entre requisicoes e
+    nova tentativa automatica (com espera crescente) se a API responder
+    429 (rajada de pedidos rapida demais -- diferente de estourar a cota
+    diaria, que retornaria 403)."""
+    time.sleep(REQUEST_DELAY_SECONDS)
+    for attempt in range(MAX_RETRIES + 1):
+        resp = requests.get(url, params=params, timeout=30)
+        if resp.status_code == 429:
+            wait = 2 ** attempt  # 1, 2, 4, 8, 16 segundos
+            print(f"429 recebido, aguardando {wait}s antes de tentar de novo "
+                  f"(tentativa {attempt + 1}/{MAX_RETRIES})...")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    resp.raise_for_status()  # se esgotou as tentativas, deixa o erro real aparecer
+    return {}
 
 HOURS_WINDOW = 48                  # janela de tempo (publicado ha no maximo 48h)
 # Termos de busca usados para ja mirar no nicho de curiosidades desde a
@@ -160,9 +184,8 @@ def fetch_video_details(video_ids: list) -> list:
             "id": ",".join(batch),
             "key": API_KEY,
         }
-        resp = requests.get(VIDEOS_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        details.extend(resp.json().get("items", []))
+        data = api_get(VIDEOS_URL, params)
+        details.extend(data.get("items", []))
     return details
 
 
@@ -179,9 +202,8 @@ def fetch_subscriber_counts(channel_ids: list) -> dict:
             "id": ",".join(batch),
             "key": API_KEY,
         }
-        resp = requests.get(CHANNELS_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        for item in resp.json().get("items", []):
+        data = api_get(CHANNELS_URL, params)
+        for item in data.get("items", []):
             stats = item.get("statistics", {})
             if stats.get("hiddenSubscriberCount"):
                 result[item["id"]] = None  # canal esconde o numero publicamente
@@ -197,9 +219,8 @@ def resolve_channel_id(handle: str) -> str | None:
         "forHandle": f"@{handle}",
         "key": API_KEY,
     }
-    resp = requests.get(CHANNELS_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    items = resp.json().get("items", [])
+    data = api_get(CHANNELS_URL, params)
+    items = data.get("items", [])
     return items[0]["id"] if items else None
 
 
@@ -209,9 +230,8 @@ def get_uploads_playlist_id(channel_id: str) -> str | None:
         "id": channel_id,
         "key": API_KEY,
     }
-    resp = requests.get(CHANNELS_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    items = resp.json().get("items", [])
+    data = api_get(CHANNELS_URL, params)
+    items = data.get("items", [])
     if not items:
         return None
     return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
@@ -233,11 +253,10 @@ def analyze_channel_profile(channel_id: str, now: datetime.datetime) -> dict:
         "maxResults": CHANNEL_RECENT_VIDEOS,
         "key": API_KEY,
     }
-    resp = requests.get(PLAYLIST_ITEMS_URL, params=params, timeout=30)
-    resp.raise_for_status()
+    data = api_get(PLAYLIST_ITEMS_URL, params)
     video_ids = [
         i["contentDetails"]["videoId"]
-        for i in resp.json().get("items", [])
+        for i in data.get("items", [])
     ]
     if not video_ids:
         return {"uploads_in_window": 0, "repeat_hits": 0}
@@ -281,11 +300,10 @@ def fetch_reference_channel_videos(handle: str) -> list:
         "maxResults": CHANNEL_RECENT_VIDEOS,
         "key": API_KEY,
     }
-    resp = requests.get(PLAYLIST_ITEMS_URL, params=params, timeout=30)
-    resp.raise_for_status()
+    data = api_get(PLAYLIST_ITEMS_URL, params)
     video_ids = [
         i["contentDetails"]["videoId"]
-        for i in resp.json().get("items", [])
+        for i in data.get("items", [])
     ]
     if not video_ids:
         return []
@@ -318,9 +336,7 @@ def fetch_shorts_search(language: str, query: str, published_after: str) -> list
         }
         if page_token:
             params["pageToken"] = page_token
-        resp = requests.get(SEARCH_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = api_get(SEARCH_URL, params)
         for item in data.get("items", []):
             vid = item.get("id", {}).get("videoId")
             if vid:
