@@ -226,23 +226,32 @@ def main():
 
     print(f"Total de videos coletados (trending + canais de referencia): {len(raw_items)}")
 
+    reasons = {
+        "duration": 0, "vertical": 0, "ai": 0, "hd": 0,
+        "window": 0, "views": 0,
+    }
+
     results = []
     for item in raw_items:
         duration_s = iso_duration_to_seconds(item["contentDetails"]["duration"])
         if duration_s > MAX_DURATION_SECONDS:
+            reasons["duration"] += 1
             continue  # passou dos 25s
 
         if not is_vertical(item["snippet"]["thumbnails"]):
+            reasons["vertical"] += 1
             continue  # nao e formato vertical (9:16)
 
         title = item["snippet"]["title"]
         description = item["snippet"].get("description", "")
         if looks_like_ai(title, description):
+            reasons["ai"] += 1
             continue  # termos indicando conteudo de IA
 
         # Resolucao: a API so expoe "hd" ou "sd" (nao ha campo para 1080p
         # exato). "hd" e a melhor aproximacao disponivel para Full HD+.
         if item["contentDetails"].get("definition") != "hd":
+            reasons["hd"] += 1
             continue
 
         published_at = item["snippet"]["publishedAt"]
@@ -251,12 +260,14 @@ def main():
         ).replace(tzinfo=datetime.timezone.utc)
         hours_since_publish = (now - published_dt).total_seconds() / 3600
         if hours_since_publish > HOURS_WINDOW:
+            reasons["window"] += 1
             continue  # publicado ha mais de 48h
         hours_since_publish = max(hours_since_publish, 0.5)
 
         stats = item.get("statistics", {})
         views = int(stats.get("viewCount", 0))
         if views < MIN_VIEWS:
+            reasons["views"] += 1
             continue  # nao bateu o minimo de 500k dentro da janela
 
         velocity = views / hours_since_publish  # views por hora (info extra)
@@ -281,6 +292,7 @@ def main():
             "url": f"https://www.youtube.com/shorts/{item['id']}",
         })
 
+    print("Motivos de descarte:", reasons)
     results.sort(key=lambda x: x["views"], reverse=True)
     top_results = results[:TOP_N]
 
