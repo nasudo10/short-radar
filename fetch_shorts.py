@@ -25,19 +25,15 @@ API_KEY = os.environ.get("YOUTUBE_API_KEY")
 if not API_KEY:
     raise SystemExit("Defina a variavel de ambiente YOUTUBE_API_KEY antes de rodar.")
 
+SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 
-# Regioes usadas para puxar a lista de "Em alta" (trending) de cada idioma.
-# Ampliado para aumentar o volume de candidatos (o filtro de 500k views/48h e exigente).
-REGIONS = {
-    "en": ["US", "GB", "CA", "AU"],
-    "es": ["MX", "ES", "AR", "CO"],
-}
-HOURS_WINDOW = 48                 # janela de tempo (publicado ha no maximo 48h)
-PAGES_PER_REGION = 2              # 2 paginas x 50 = ate 100 videos por regiao
-TOP_N = 30                        # quantos videos entregar no final
+LANGUAGES = ["en", "es"]           # ingles e espanhol
+HOURS_WINDOW = 48                  # janela de tempo (publicado ha no maximo 48h)
+SEARCH_PAGES = 3                   # paginas de busca por idioma (50 resultados cada)
+TOP_N = 30                         # quantos videos entregar no final
 MIN_VIEWS = 500_000                # views minimas DENTRO da janela de 48h
 MAX_DURATION_SECONDS = 25          # duracao maxima do Short
 
@@ -176,47 +172,63 @@ def fetch_reference_channel_videos(handle: str) -> list:
     return details
 
 
-def fetch_trending(region_code: str, language: str) -> list:
-    """Busca a lista 'Em alta' (trending) de uma regiao. Nao depende de
-    palavra-chave, por isso e mais confiavel que o endpoint de busca."""
-    items = []
+def fetch_shorts_search(language: str, published_after: str) -> list:
+    """Busca vídeos marcados como #shorts, publicados na janela de tempo,
+    ordenados por visualizacoes. Usar '#shorts' como termo de busca (em vez
+    de nao usar 'q' nenhum) e o que garante que a API devolva resultados
+    -- sem 'q', o endpoint de busca do YouTube retorna lista vazia."""
+    video_ids = []
     page_token = None
-    for _ in range(PAGES_PER_REGION):
+    for _ in range(SEARCH_PAGES):
         params = {
-            "part": "snippet,contentDetails,statistics",
-            "chart": "mostPopular",
-            "regionCode": region_code,
+            "part": "id",
+            "q": "#shorts",
+            "type": "video",
+            "order": "viewCount",
+            "publishedAfter": published_after,
+            "relevanceLanguage": language,
+            "videoDuration": "short",  # <4min (filtramos <=25s depois)
             "maxResults": 50,
             "key": API_KEY,
         }
         if page_token:
             params["pageToken"] = page_token
-        resp = requests.get(VIDEOS_URL, params=params, timeout=30)
+        resp = requests.get(SEARCH_URL, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         for item in data.get("items", []):
-            item["_language"] = language
-            item["_region"] = region_code
-            item["_isReference"] = False
-        items.extend(data.get("items", []))
+            vid = item.get("id", {}).get("videoId")
+            if vid:
+                video_ids.append(vid)
         page_token = data.get("nextPageToken")
         if not page_token:
             break
-    return items
+
+    if not video_ids:
+        return []
+
+    details = fetch_video_details(video_ids)
+    for item in details:
+        item["_language"] = language
+        item["_region"] = "busca_shorts"
+        item["_isReference"] = False
+    return details
 
 
 def main():
     now = datetime.datetime.now(datetime.timezone.utc)
+    published_after = (now - datetime.timedelta(hours=HOURS_WINDOW)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
     seen_ids = set()
     raw_items = []
-    for lang, regions in REGIONS.items():
-        for region in regions:
-            batch = fetch_trending(region, lang)
-            new_batch = [i for i in batch if i["id"] not in seen_ids]
-            seen_ids.update(i["id"] for i in new_batch)
-            raw_items.extend(new_batch)
-            print(f"[{lang}/{region}] {len(new_batch)} videos novos (total bruto)")
+    for lang in LANGUAGES:
+        batch = fetch_shorts_search(lang, published_after)
+        new_batch = [i for i in batch if i["id"] not in seen_ids]
+        seen_ids.update(i["id"] for i in new_batch)
+        raw_items.extend(new_batch)
+        print(f"[{lang}] {len(new_batch)} videos novos (total bruto)")
 
     for handle in REFERENCE_CHANNELS:
         batch = fetch_reference_channel_videos(handle)
@@ -240,7 +252,9 @@ def main():
 
         if not is_vertical(item["snippet"]["thumbnails"]):
             reasons["vertical"] += 1
-            continue  # nao e formato vertical (9:16)
+            # nao bloqueia mais (thumbnail nem sempre reflete o formato real do
+            # video) -- so contabiliza para diagnostico. O formato Short ja
+            # e garantido pela busca por #shorts + duracao <=25s.
 
         title = item["snippet"]["title"]
         description = item["snippet"].get("description", "")
