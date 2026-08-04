@@ -40,8 +40,8 @@ VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 
-REQUEST_DELAY_SECONDS = 0.3        # pausa entre chamadas -- evita 429 (rate limit) da API
-MAX_RETRIES = 4                    # tentativas extras se a API responder 429
+REQUEST_DELAY_SECONDS = 1.2        # pausa entre chamadas -- evita 429 (rate limit) da API
+MAX_RETRIES = 5                    # tentativas extras se a API responder 429
 
 
 def api_get(url: str, params: dict) -> dict:
@@ -53,7 +53,7 @@ def api_get(url: str, params: dict) -> dict:
     for attempt in range(MAX_RETRIES + 1):
         resp = requests.get(url, params=params, timeout=30)
         if resp.status_code == 429:
-            wait = 2 ** attempt  # 1, 2, 4, 8, 16 segundos
+            wait = min(3 * (2 ** attempt), 60)  # 3, 6, 12, 24, 48, 60 segundos
             print(f"429 recebido, aguardando {wait}s antes de tentar de novo "
                   f"(tentativa {attempt + 1}/{MAX_RETRIES})...")
             time.sleep(wait)
